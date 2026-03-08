@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>全球天氣查詢</title>
+  <link rel="stylesheet" href="style.css">
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  >
+</head>
+<body>
+  <main class="page">
+    <header class="hero card">
+      <div class="hero-head">
+        <div>
+          <h1>全球天氣查詢網站</h1>
+          <p>可展示、可教學的純前端天氣查詢範例</p>
+        </div>
+        <button id="themeToggleBtn" type="button" class="ghost-btn">切換深色模式</button>
+      </div>
+
+      <section class="search-panel">
+        <h2>搜尋區</h2>
+        <div class="search-row">
+        <input id="cityInput" type="text" placeholder="例如：Taipei、Tokyo、London" aria-label="城市名稱">
+          <button id="searchBtn" type="button">搜尋城市</button>
+          <button id="locationBtn" type="button" class="ghost-btn">使用我的位置</button>
+        </div>
+      </section>
+
+      <div id="loadingBox" class="loading hidden" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="loadingText">讀取中...</span>
+      </div>
+
+      <p id="statusMessage" class="status"></p>
+    </header>
+
+    <section id="initialCard" class="card">
+      <h2>開始查詢</h2>
+      <p class="empty-text">請輸入城市名稱並搜尋，或點選「使用我的位置」快速查看目前天氣。</p>
+    </section>
+
+    <section id="recentCard" class="card">
+      <div class="section-head">
+        <h2>最近查詢城市</h2>
+      </div>
+      <div id="recentList" class="chip-list">
+        <p class="empty-text">尚無查詢紀錄</p>
+      </div>
+    </section>
+
+    <section id="resultsCard" class="card hidden">
+      <h2>候選城市</h2>
+      <ul id="cityResults" class="city-list"></ul>
+    </section>
+
+    <section class="main-layout">
+      <section class="card map-card">
+        <h2>世界地圖查詢</h2>
+        <div id="worldMap" class="world-map" aria-label="世界地圖"></div>
+        <p id="mapHint" class="empty-text">可直接點擊地圖任意位置查詢天氣。</p>
+      </section>
+
+      <section class="detail-column">
+        <section id="currentWeatherCard" class="card hidden">
+          <div class="section-head">
+            <h2>目前天氣</h2>
+            <button id="addCurrentToCompareBtn" type="button" class="ghost-btn">加入目前城市到比較</button>
+          </div>
+          <div class="weather-hero">
+            <div id="currentIcon" class="weather-icon" aria-hidden="true">☀️</div>
+            <div>
+              <p id="currentDesc" class="weather-desc">--</p>
+              <p id="currentCityTitle" class="weather-city">--</p>
+            </div>
+          </div>
+
+          <dl class="location-grid">
+            <div class="location-item">
+              <dt>城市</dt>
+              <dd id="metaCity">--</dd>
+            </div>
+            <div class="location-item">
+              <dt>國家</dt>
+              <dd id="metaCountry">--</dd>
+            </div>
+            <div class="location-item">
+              <dt>行政區</dt>
+              <dd id="metaAdmin">--</dd>
+            </div>
+            <div class="location-item">
+              <dt>當地時間</dt>
+              <dd id="metaTime">--</dd>
+            </div>
+            <div class="location-item">
+              <dt>時區</dt>
+              <dd id="metaTimezone">--</dd>
+            </div>
+            <div class="location-item">
+              <dt>座標</dt>
+              <dd id="metaCoord">--</dd>
+            </div>
+          </dl>
+
+          <div class="metric-grid">
+            <article class="metric-card">
+              <h3>目前氣溫</h3>
+              <p id="currentTemp" class="metric">--°C</p>
+            </article>
+            <article class="metric-card">
+              <h3>體感溫度</h3>
+              <p id="currentFeelsLike" class="metric">--°C</p>
+            </article>
+            <article class="metric-card">
+              <h3>風速</h3>
+              <p id="currentWind" class="metric">-- km/h</p>
+            </article>
+            <article class="metric-card">
+              <h3>相對濕度</h3>
+              <p id="currentHumidity" class="metric">--%</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="forecastCard" class="card hidden">
+          <h2 class="forecast-title">七日預報</h2>
+          <div id="forecastList" class="forecast-grid"></div>
+        </section>
+      </section>
+    </section>
+
+    <section id="compareCard" class="card">
+      <div class="section-head">
+        <h2>多城市比較模式</h2>
+        <button id="compareRefreshBtn" type="button" class="ghost-btn">重新整理比較</button>
+      </div>
+      <div class="compare-controls">
+        <input id="compareCityInput" type="text" placeholder="輸入城市後加入比較（最多 5 個）" aria-label="比較城市輸入">
+        <button id="compareAddBtn" type="button">加入比較城市</button>
+      </div>
+      <p id="compareStatus" class="empty-text">載入示範城市天氣中...</p>
+      <div id="compareGrid" class="compare-grid"></div>
+    </section>
+
+    <footer class="card footer">
+      <p>資料來源：Open-Meteo（Geocoding API / Forecast API）</p>
+    </footer>
+  </main>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script src="script.js"></script>
+</body>
+</html>
