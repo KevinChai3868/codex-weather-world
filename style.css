@@ -263,6 +263,27 @@ button:disabled {
   color: var(--muted);
 }
 
+.weather-subtitle,
+.weather-extra {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.weather-extra {
+  font-size: 0.86rem;
+}
+
+.marker-popup-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.marker-popup-temp {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
 .location-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

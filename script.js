@@ -25,6 +25,8 @@ const dom = {
   currentIcon: document.getElementById("currentIcon"),
   currentDesc: document.getElementById("currentDesc"),
   currentCityTitle: document.getElementById("currentCityTitle"),
+  currentCitySubtitle: document.getElementById("currentCitySubtitle"),
+  currentCityExtra: document.getElementById("currentCityExtra"),
   metaCity: document.getElementById("metaCity"),
   metaCountry: document.getElementById("metaCountry"),
   metaAdmin: document.getElementById("metaAdmin"),
@@ -49,6 +51,7 @@ const STORAGE_KEYS = {
 
 const MAX_RECENT = 5;
 const MAX_COMPARE = 5;
+const LOCATION_NAME_PRIORITY = ["city", "town", "village", "municipality", "county", "state_district", "state", "country"];
 
 const defaultCompareCities = [
   { name: "Taipei", country: "臺灣", latitude: 25.03, longitude: 121.57, timezone: "Asia/Taipei" },
@@ -88,14 +91,92 @@ function setLoading(isLoading, message = "讀取中...") {
 }
 
 function normalizeCity(city) {
+  const latitude = Number(city.latitude);
+  const longitude = Number(city.longitude);
+  const name = `${city.name || ""}`.trim();
+  const country = `${city.country || ""}`.trim();
+  const admin1 = `${city.admin1 || ""}`.trim();
+  const fallbackName = name || admin1 || country || "未命名位置";
+
   return {
-    key: `${city.name || "未知城市"}-${city.country || "未知國家"}-${Number(city.latitude).toFixed(2)}-${Number(city.longitude).toFixed(2)}`,
-    name: city.name || "未知城市",
-    country: city.country || "未知國家",
-    admin1: city.admin1 || "",
-    latitude: Number(city.latitude),
-    longitude: Number(city.longitude),
+    key: `${fallbackName}-${country || "無國家資訊"}-${latitude.toFixed(2)}-${longitude.toFixed(2)}`,
+    name: fallbackName,
+    country,
+    admin1,
+    latitude,
+    longitude,
     timezone: city.timezone || "auto",
+  };
+}
+
+function firstNonEmpty(values) {
+  return values.find((value) => `${value || ""}`.trim()) || "";
+}
+
+function listUniqueNonEmpty(values) {
+  const normalized = values.map((value) => `${value || ""}`.trim()).filter(Boolean);
+  return Array.from(new Set(normalized));
+}
+
+function normalizeLocationData(rawData, lat, lon) {
+  if (!rawData) {
+    return normalizeCity({
+      name: "未命名位置",
+      country: "",
+      admin1: "",
+      latitude: lat,
+      longitude: lon,
+      timezone: "auto",
+    });
+  }
+
+  if (rawData.address) {
+    const address = rawData.address;
+    const name = firstNonEmpty(LOCATION_NAME_PRIORITY.map((field) => address[field]));
+    const country = `${address.country || ""}`.trim();
+    const admin1 = firstNonEmpty([address.state_district, address.state, address.county]);
+
+    return normalizeCity({
+      name,
+      country,
+      admin1,
+      latitude: lat,
+      longitude: lon,
+      timezone: "auto",
+    });
+  }
+
+  return normalizeCity({
+    name: firstNonEmpty([rawData.name, rawData.admin2, rawData.admin1, rawData.country]),
+    country: `${rawData.country || ""}`.trim(),
+    admin1: firstNonEmpty([rawData.admin1, rawData.admin2]),
+    latitude: lat,
+    longitude: lon,
+    timezone: rawData.timezone || "auto",
+  });
+}
+
+function buildDisplayLocation(location, weatherTimezone = "") {
+  const normalized = normalizeCity(location);
+  const title = normalized.name || "未命名位置";
+
+  const subtitleParts = listUniqueNonEmpty([
+    normalized.admin1 !== title ? normalized.admin1 : "",
+    normalized.country !== title ? normalized.country : "",
+  ]);
+
+  const subtitle = subtitleParts.join(" / ") || (normalized.country && normalized.country !== title ? normalized.country : "未提供行政區與國家資訊");
+  const timezoneText = weatherTimezone || (normalized.timezone && normalized.timezone !== "auto" ? normalized.timezone : "自動時區");
+  const extra = `座標：${formatCoord(normalized.latitude, normalized.longitude)}｜時區：${timezoneText}`;
+
+  return {
+    title,
+    subtitle,
+    extra,
+    country: normalized.country || "未提供",
+    admin: normalized.admin1 || "未提供",
+    coord: formatCoord(normalized.latitude, normalized.longitude),
+    timezone: timezoneText,
   };
 }
 
@@ -220,7 +301,7 @@ function formatLocalTime(isoLocalString) {
 }
 
 function formatCoord(lat, lon) {
-  if (typeof lat !== "number" || typeof lon !== "number") return "--";
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return "--";
   return `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
 }
 
@@ -247,6 +328,21 @@ async function reverseGeocode(lat, lon) {
   return (data.results && data.results[0]) || null;
 }
 
+async function reverseGeocodeLocation(lat, lon) {
+  try {
+    const nominatimUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=18&addressdetails=1&accept-language=zh-TW`;
+    const nominatimData = await fetchJson(nominatimUrl, "反向地理查詢失敗");
+    return normalizeLocationData(nominatimData, lat, lon);
+  } catch (error) {
+    try {
+      const fallbackData = await reverseGeocode(lat, lon);
+      return normalizeLocationData(fallbackData, lat, lon);
+    } catch (innerError) {
+      return normalizeLocationData(null, lat, lon);
+    }
+  }
+}
+
 async function fetchWeather(lat, lon, timezone = "auto") {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&timezone=${encodeURIComponent(timezone)}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=7`;
   return fetchJson(url, "天氣資料取得失敗");
@@ -255,7 +351,21 @@ async function fetchWeather(lat, lon, timezone = "auto") {
 // ===============================
 // 地圖功能
 // ===============================
-function setMapMarker(lat, lon, label = "") {
+function buildMarkerPopupContent(city, weatherData = null) {
+  const popup = document.createElement("div");
+  const location = buildDisplayLocation(city, weatherData?.timezone || "");
+  const weather = weatherData?.current || null;
+
+  popup.appendChild(createTextElement("p", location.title, "marker-popup-title"));
+  if (weather) {
+    popup.appendChild(createTextElement("p", `目前溫度：${Math.round(weather.temperature_2m ?? 0)}°C`, "marker-popup-temp"));
+  } else {
+    popup.appendChild(createTextElement("p", "天氣讀取中...", "marker-popup-temp"));
+  }
+  return popup;
+}
+
+function setMapMarker(lat, lon, popupContent = null) {
   if (!state.map || !window.L) return;
 
   if (!state.marker) {
@@ -264,44 +374,29 @@ function setMapMarker(lat, lon, label = "") {
     state.marker.setLatLng([lat, lon]);
   }
 
-  if (label) {
-    state.marker.bindPopup(label);
+  if (popupContent) {
+    state.marker.bindPopup(popupContent);
+    state.marker.openPopup();
   }
 }
 
-function focusMap(lat, lon, label = "") {
+function focusMap(lat, lon, popupContent = null) {
   if (!state.map) return;
   state.map.flyTo([lat, lon], 8, { duration: 0.6 });
-  setMapMarker(lat, lon, label);
+  setMapMarker(lat, lon, popupContent);
 }
 
 async function handleMapClick(lat, lon) {
   try {
     setStatus("");
-    setLoading(true, "查詢地圖位置天氣中...");
+    setLoading(true, "辨識地圖位置中...");
+    focusMap(lat, lon, buildMarkerPopupContent({ name: "定位中", latitude: lat, longitude: lon }));
 
-    let cityInfo = null;
-    try {
-      cityInfo = await reverseGeocode(lat, lon);
-    } catch (error) {
-      cityInfo = null;
-    }
-
-    const city = normalizeCity({
-      name: cityInfo?.name || "地圖選取位置",
-      country: cityInfo?.country || "未知國家",
-      admin1: cityInfo?.admin1 || "",
-      latitude: lat,
-      longitude: lon,
-      timezone: cityInfo?.timezone || "auto",
-    });
-
-    await queryWeatherByCity(city, { saveRecent: true, updateMap: true });
-    setMapHint(`已選擇座標：${formatCoord(lat, lon)}`);
+    const city = await reverseGeocodeLocation(lat, lon);
+    await queryWeatherByCity(city, { saveRecent: true, updateMap: true, loadingMessage: "查詢地圖位置天氣中..." });
   } catch (error) {
-    setStatus(`地圖查詢失敗：${error.message}`);
-  } finally {
     setLoading(false);
+    setStatus(`地圖查詢失敗：${error.message}`);
   }
 }
 
@@ -351,10 +446,11 @@ function renderRecentCities() {
   }
 
   state.recentCities.forEach((city) => {
+    const location = buildDisplayLocation(city);
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "chip-btn";
-    btn.textContent = `${city.name}（${city.country}）`;
+    btn.textContent = location.country !== "未提供" ? `${location.title}（${location.country}）` : location.title;
     btn.addEventListener("click", () => {
       queryWeatherByCity(city);
     });
@@ -376,10 +472,12 @@ function renderCityCandidates(cities) {
 
   cities.forEach((rawCity) => {
     const city = normalizeCity(rawCity);
+    const location = buildDisplayLocation(city);
+    const resultSubtitle = listUniqueNonEmpty([city.admin1, city.country]).join(" / ");
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = `${city.name}${city.admin1 ? `, ${city.admin1}` : ""}, ${city.country}`;
+    btn.textContent = resultSubtitle ? `${location.title}, ${resultSubtitle}` : location.title;
     btn.addEventListener("click", () => {
       queryWeatherByCity(city);
     });
@@ -389,12 +487,13 @@ function renderCityCandidates(cities) {
 }
 
 function setLocationMeta(city, weatherData) {
-  dom.metaCity.textContent = city.name || "--";
-  dom.metaCountry.textContent = city.country || "--";
-  dom.metaAdmin.textContent = city.admin1 || "無";
+  const location = buildDisplayLocation(city, weatherData.timezone || "");
+  dom.metaCity.textContent = location.title;
+  dom.metaCountry.textContent = location.country;
+  dom.metaAdmin.textContent = location.admin;
   dom.metaTime.textContent = formatLocalTime(weatherData.current?.time);
-  dom.metaTimezone.textContent = weatherData.timezone || city.timezone || "--";
-  dom.metaCoord.textContent = formatCoord(Number(city.latitude), Number(city.longitude));
+  dom.metaTimezone.textContent = location.timezone;
+  dom.metaCoord.textContent = location.coord;
 }
 
 function renderForecast(dailyData) {
@@ -422,6 +521,7 @@ function renderForecast(dailyData) {
 function renderCurrentWeather(city, weatherData) {
   const current = weatherData.current || {};
   const info = weatherInfoFromCode(current.weather_code);
+  const location = buildDisplayLocation(city, weatherData.timezone || "");
 
   state.selectedCity = city;
   renderInitialPrompt(false);
@@ -431,7 +531,9 @@ function renderCurrentWeather(city, weatherData) {
 
   dom.currentIcon.textContent = info.emoji;
   dom.currentDesc.textContent = info.text;
-  dom.currentCityTitle.textContent = `${city.name} · ${city.country}`;
+  dom.currentCityTitle.textContent = location.title;
+  dom.currentCitySubtitle.textContent = location.subtitle;
+  dom.currentCityExtra.textContent = location.extra;
   dom.currentTemp.textContent = `${Math.round(current.temperature_2m ?? 0)}°C`;
   dom.currentFeelsLike.textContent = `${Math.round(current.apparent_temperature ?? 0)}°C`;
   dom.currentHumidity.textContent = `${Math.round(current.relative_humidity_2m ?? 0)}%`;
@@ -450,6 +552,7 @@ function createCompareCard(city, weatherData) {
   const current = weatherData.current || {};
   const daily = weatherData.daily || {};
   const info = weatherInfoFromCode(current.weather_code);
+  const location = buildDisplayLocation(city, weatherData.timezone || "");
   const tMax = Math.round(daily.temperature_2m_max?.[0] ?? 0);
   const tMin = Math.round(daily.temperature_2m_min?.[0] ?? 0);
 
@@ -458,7 +561,7 @@ function createCompareCard(city, weatherData) {
 
   const head = document.createElement("div");
   head.className = "compare-head";
-  head.appendChild(createTextElement("h3", city.name));
+  head.appendChild(createTextElement("h3", location.title));
 
   const removeBtn = document.createElement("button");
   removeBtn.type = "button";
@@ -474,7 +577,7 @@ function createCompareCard(city, weatherData) {
 
   head.appendChild(removeBtn);
   card.appendChild(head);
-  card.appendChild(createTextElement("p", city.country, "compare-country"));
+  card.appendChild(createTextElement("p", location.country, "compare-country"));
 
   const main = document.createElement("div");
   main.className = "compare-main";
@@ -533,7 +636,7 @@ async function queryWeatherByCity(rawCity, options = {}) {
 
   try {
     setStatus("");
-    setLoading(true, "讀取天氣資料中...");
+    setLoading(true, options.loadingMessage || "讀取天氣資料中...");
     const weatherData = await fetchWeather(city.latitude, city.longitude, city.timezone || "auto");
     renderCurrentWeather(city, weatherData);
 
@@ -543,7 +646,9 @@ async function queryWeatherByCity(rawCity, options = {}) {
     }
 
     if (options.updateMap !== false) {
-      focusMap(city.latitude, city.longitude, `${city.name}, ${city.country}`);
+      focusMap(city.latitude, city.longitude, buildMarkerPopupContent(city, weatherData));
+      const location = buildDisplayLocation(city, weatherData.timezone || "");
+      setMapHint(`目前位置：${location.title}（${location.coord}）`);
     }
   } catch (error) {
     setStatus(`查詢失敗：${error.message}`);
@@ -621,32 +726,15 @@ async function handleUseLocation() {
     const position = await getUserPosition();
     const lat = position.coords.latitude;
     const lon = position.coords.longitude;
-
-    let cityInfo = null;
-    try {
-      cityInfo = await reverseGeocode(lat, lon);
-    } catch (error) {
-      cityInfo = null;
-    }
-
-    const city = normalizeCity({
-      name: cityInfo?.name || "目前位置",
-      country: cityInfo?.country || "未知國家",
-      admin1: cityInfo?.admin1 || "",
-      latitude: lat,
-      longitude: lon,
-      timezone: cityInfo?.timezone || "auto",
-    });
-
-    await queryWeatherByCity(city);
+    const city = await reverseGeocodeLocation(lat, lon);
+    await queryWeatherByCity(city, { loadingMessage: "取得你的位置天氣中..." });
   } catch (error) {
+    setLoading(false);
     if (error.code === 1) {
       setStatus("你已拒絕定位授權，請允許定位或改用城市名稱搜尋。");
     } else {
       setStatus(`無法使用定位：${error.message}`);
     }
-  } finally {
-    setLoading(false);
   }
 }
 
@@ -658,7 +746,8 @@ async function handleAddCurrentToCompare() {
 
   upsertCompareCity(state.selectedCity);
   await loadCompareWeather();
-  dom.compareStatus.textContent = `已加入「${state.selectedCity.name}」到比較清單。`;
+  const location = buildDisplayLocation(state.selectedCity);
+  dom.compareStatus.textContent = `已加入「${location.title}」到比較清單。`;
 }
 
 function bindEvents() {
