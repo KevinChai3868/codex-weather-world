@@ -316,10 +316,113 @@ async function fetchJson(url, errorPrefix) {
   return response.json();
 }
 
-async function searchCities(query) {
-  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=10&language=zh&format=json`;
+const cityAliasMap = {
+  札幌: "Sapporo",
+  東京: "Tokyo",
+  大阪: "Osaka",
+  京都: "Kyoto",
+  首爾: "Seoul",
+  釜山: "Busan",
+  慕尼黑: "Munich",
+  哥本哈根: "Copenhagen",
+  維也納: "Vienna",
+  布拉格: "Prague",
+};
+
+function containsCjk(text) {
+  return /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/.test(text);
+}
+
+function normalizeQueryToken(query) {
+  return `${query || ""}`.trim().replace(/\s+/g, " ");
+}
+
+function dedupeCitiesByLocation(cities) {
+  const seen = new Set();
+  const deduped = [];
+
+  cities.forEach((city) => {
+    const lat = Number(city.latitude);
+    const lon = Number(city.longitude);
+    const key = `${city.name || ""}|${city.country || ""}|${lat.toFixed(3)}|${lon.toFixed(3)}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(city);
+    }
+  });
+
+  return deduped;
+}
+
+function buildSearchVariants(query) {
+  const base = normalizeQueryToken(query);
+  const variants = [base];
+  const noSpace = base.replace(/\s+/g, "");
+
+  if (noSpace && noSpace !== base) {
+    variants.push(noSpace);
+  }
+
+  if (containsCjk(base)) {
+    ["市", "縣", "州", "區"].forEach((suffix) => {
+      if (base && !base.endsWith(suffix)) {
+        variants.push(`${base}${suffix}`);
+      }
+    });
+  }
+
+  const alias = cityAliasMap[base];
+  if (alias) {
+    variants.push(alias);
+  }
+
+  return Array.from(new Set(variants.filter(Boolean)));
+}
+
+async function searchCitiesByLanguage(query, language = "zh", count = 10) {
+  const params = new URLSearchParams({
+    name: query,
+    count: String(count),
+    language,
+    format: "json",
+  });
+  const url = `https://geocoding-api.open-meteo.com/v1/search?${params.toString()}`;
   const data = await fetchJson(url, "城市搜尋失敗");
   return data.results || [];
+}
+
+async function searchCities(query) {
+  const cleanedQuery = normalizeQueryToken(query);
+  const queryLength = cleanedQuery.length;
+  const isShortQuery = queryLength <= 2;
+  const variants = buildSearchVariants(cleanedQuery);
+
+  const searchPlan = [
+    { languages: ["zh", "en"], count: isShortQuery ? 20 : 12, variants: [variants[0]] },
+    { languages: ["ja", "en"], count: isShortQuery ? 20 : 12, variants: [variants[0]] },
+    { languages: ["zh", "en", "ja"], count: 20, variants },
+  ];
+
+  const aggregate = [];
+  for (const round of searchPlan) {
+    for (const keyword of round.variants) {
+      for (const language of round.languages) {
+        try {
+          const results = await searchCitiesByLanguage(keyword, language, round.count);
+          aggregate.push(...results);
+        } catch (error) {
+          // 單次查詢失敗不應中斷整體 fallback
+        }
+      }
+    }
+
+    const dedupedRound = dedupeCitiesByLocation(aggregate);
+    if (dedupedRound.length) {
+      return dedupedRound.slice(0, 20);
+    }
+  }
+
+  return [];
 }
 
 async function reverseGeocode(lat, lon) {
